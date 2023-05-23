@@ -29,6 +29,21 @@ import (
 	"github.com/dolthub/dolt/go/libraries/utils/argparser"
 )
 
+type printData struct {
+	branchName string
+
+	conflictsPresent,
+	showIgnoredTables,
+	statusPresent,
+	mergeActive bool
+
+	stagedTables,
+	unstagedTables,
+	untrackedTables,
+	unmergedTables,
+	ignoredTables map[string]string
+}
+
 var statusDocs = cli.CommandDocumentationContent{
 	ShortDesc: "Show the working status",
 	LongDesc:  `Displays working tables that differ from the current HEAD commit, tables that differ from the staged tables, and tables that are in the working tree that are not tracked by dolt. The first are what you would commit by running {{.EmphasisLeft}}dolt commit{{.EmphasisRight}}; the second and third are what you could commit by running {{.EmphasisLeft}}dolt add .{{.EmphasisRight}} before running {{.EmphasisLeft}}dolt commit{{.EmphasisRight}}.`,
@@ -70,7 +85,7 @@ func (cmd StatusCmd) Exec(ctx context.Context, commandStr string, args []string,
 	ap := cmd.ArgParser()
 	help, _ := cli.HelpAndUsagePrinters(cli.CommandDocsForCommandString(commandStr, statusDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
-	showIngoredTables := apr.Contains(cli.ShowIgnoredFlag)
+	showIgnoredTables := apr.Contains(cli.ShowIgnoredFlag)
 
 	// configure SQL engine
 	queryist, sqlCtx, closeFunc, err := cliCtx.QueryEngine(ctx)
@@ -92,24 +107,6 @@ func (cmd StatusCmd) Exec(ctx context.Context, commandStr string, args []string,
 	if err != nil {
 		return handleStatusVErr(err)
 	}
-
-	// get conflicts
-	conflicts, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_conflicts;")
-	if err != nil {
-		return handleStatusVErr(err)
-	}
-	conflictedTables := make(map[string]bool)
-	for _, row := range conflicts {
-		tableName := row[0].(string)
-		conflictedTables[tableName] = true
-	}
-
-	// get statuses
-	statusRows, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_status;")
-	if err != nil {
-		return handleStatusVErr(err)
-	}
-	statusPresent := len(statusRows) > 0
 
 	// staged/working tables
 	stagedTableNames := make(map[string]bool)
@@ -135,7 +132,24 @@ func (cmd StatusCmd) Exec(ctx context.Context, commandStr string, args []string,
 	}
 	mergeActive := !(len(mergeRows) == 1 && mergeRows[0][0] == false)
 
-	// collect statuses
+	// get statuses
+	statusRows, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_status;")
+	if err != nil {
+		return handleStatusVErr(err)
+	}
+	statusPresent := len(statusRows) > 0
+
+	// find conflicts in statuses
+	conflictedTables := make(map[string]bool)
+	for _, row := range statusRows {
+		tableName := row[0].(string)
+		status := row[2].(string)
+		if status == "conflict" {
+			conflictedTables[tableName] = true
+		}
+	}
+
+	// sort tables into categories
 	conflictsPresent := false
 	stagedTables := map[string]string{}
 	unstagedTables := map[string]string{}
@@ -210,10 +224,19 @@ func (cmd StatusCmd) Exec(ctx context.Context, commandStr string, args []string,
 		}
 	}
 
-	printEverything(
-		branchName,
-		conflictsPresent, showIngoredTables, statusPresent, mergeActive,
-		stagedTables, unstagedTables, untrackedTables, unmergedTables, ignoredTables)
+	// print everything
+	printEverything(printData{
+		branchName:        branchName,
+		conflictsPresent:  conflictsPresent,
+		showIgnoredTables: showIgnoredTables,
+		statusPresent:     statusPresent,
+		mergeActive:       mergeActive,
+		stagedTables:      stagedTables,
+		unstagedTables:    unstagedTables,
+		untrackedTables:   untrackedTables,
+		unmergedTables:    unmergedTables,
+		ignoredTables:     ignoredTables,
+	})
 
 	return 0
 }
@@ -261,33 +284,30 @@ func getIgnoredTablePatternsFromSql(queryist cli.Queryist, sqlCtx *sql.Context) 
 			return nil, errors.New(fmt.Sprintf("unexpected type for ignore column, value = %s", ignoreVal))
 		}
 
-		ip := doltdb.IgnorePattern{pattern, ignore}
+		ip := doltdb.NewIgnorePattern(pattern, ignore)
 		ignorePatterns = append(ignorePatterns, ip)
 	}
 	return ignorePatterns, nil
 }
 
-func printEverything(
-	branchName string,
-	conflictsPresent, showIgnoredTables, statusPresent, mergeActive bool,
-	stagedTables, unstagedTables, untrackedTables, unmergedTables, ignoredTables map[string]string) {
+func printEverything(data printData) {
 	statusFmt := "\t%-18s%s"
 
 	// branch name
-	cli.Printf(branchHeader, branchName)
+	cli.Printf(branchHeader, data.branchName)
 
 	// conflicts
-	if conflictsPresent {
+	if data.conflictsPresent {
 		cli.Println("\nYou have unmerged tables.")
 		cli.Println("  (fix conflicts and run \"dolt commit\")")
 		cli.Println("  (use \"dolt merge --abort\" to abort the merge)")
 	}
 
 	// staged tables
-	if len(stagedTables) > 0 {
+	if len(data.stagedTables) > 0 {
 		cli.Println("Changes to be committed:")
 		cli.Println("  (use \"dolt reset <table>...\" to unstage)")
-		for tableName, status := range stagedTables {
+		for tableName, status := range data.stagedTables {
 			text := fmt.Sprintf(statusFmt, status+":", tableName)
 			greenText := color.GreenString(text)
 			cli.Println(greenText)
@@ -295,11 +315,11 @@ func printEverything(
 	}
 
 	// unstaged tables
-	if len(unstagedTables) > 0 {
+	if len(data.unstagedTables) > 0 {
 		cli.Println("\nChanges not staged for commit:")
 		cli.Println("  (use \"dolt add <table>\" to update what will be committed)")
 		cli.Println("  (use \"dolt checkout <table>\" to discard changes in working directory)")
-		for tableName, status := range unstagedTables {
+		for tableName, status := range data.unstagedTables {
 			text := fmt.Sprintf(statusFmt, status+":", tableName)
 			redText := color.RedString(text)
 			cli.Println(redText)
@@ -307,10 +327,10 @@ func printEverything(
 	}
 
 	// untracked tables
-	if len(untrackedTables) > 0 {
+	if len(data.untrackedTables) > 0 {
 		cli.Println("\nUntracked tables:")
 		cli.Println("  (use \"dolt add <table>\" to include in what will be committed)")
-		for tableName, status := range untrackedTables {
+		for tableName, status := range data.untrackedTables {
 			text := fmt.Sprintf(statusFmt, status+":", tableName)
 			redText := color.RedString(text)
 			cli.Println(redText)
@@ -318,11 +338,11 @@ func printEverything(
 	}
 
 	// unmerged paths
-	if len(unmergedTables) > 0 {
+	if len(data.unmergedTables) > 0 {
 		cli.Println("\nUnmerged paths:")
 		cli.Println("  (use \"dolt add <table>...\" to mark resolution)")
 		cli.Println("  (use \"dolt commit\" once resolved)")
-		for tableName, status := range unmergedTables {
+		for tableName, status := range data.unmergedTables {
 			text := fmt.Sprintf(statusFmt, status+":", tableName)
 			redText := color.RedString(text)
 			cli.Println(redText)
@@ -330,10 +350,10 @@ func printEverything(
 	}
 
 	// ignored tables
-	if showIgnoredTables && len(ignoredTables) > 0 {
+	if data.showIgnoredTables && len(data.ignoredTables) > 0 {
 		cli.Println("\nIgnored tables:")
 		cli.Println("  (use \"dolt add -f <table>\" to include in what will be committed)")
-		for tableName, status := range ignoredTables {
+		for tableName, status := range data.ignoredTables {
 			text := fmt.Sprintf(statusFmt, status+":", tableName)
 			redText := color.RedString(text)
 			cli.Println(redText)
@@ -341,7 +361,7 @@ func printEverything(
 	}
 
 	// nothing to commit
-	if !statusPresent && !mergeActive {
+	if !data.statusPresent && !data.mergeActive {
 		cli.Println("nothing to commit, working tree clean")
 	}
 }

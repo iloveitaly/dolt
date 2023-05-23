@@ -31,6 +31,10 @@ type IgnorePattern struct {
 	Ignore  bool
 }
 
+func NewIgnorePattern(pattern string, ignore bool) IgnorePattern {
+	return IgnorePattern{Pattern: pattern, Ignore: ignore}
+}
+
 // IgnoredTables contains the results of comparing a series of tables to a set of dolt_ignore patterns.
 type IgnoredTables struct {
 	Ignore     []string
@@ -100,7 +104,7 @@ func GetIgnoredTablePatterns(ctx context.Context, roots Roots) (IgnorePatterns, 
 			return nil, fmt.Errorf("could not read pattern")
 		}
 		ignore, ok := valueDesc.GetBool(0, valueTuple)
-		ignorePatterns = append(ignorePatterns, IgnorePattern{pattern, ignore})
+		ignorePatterns = append(ignorePatterns, NewIgnorePattern(pattern, ignore))
 	}
 	return ignorePatterns, nil
 }

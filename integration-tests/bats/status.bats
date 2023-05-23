@@ -473,7 +473,6 @@ SQL
     dolt add t
     run dolt status --ignored
     [ "$status" -eq 0 ]
-    echo "output = $output"
     [[ "$output" =~ "On branch main" ]] || false
     [[ "$output" =~ "Changes to be committed:" ]] || false
     [[ "$output" =~ "  (use \"dolt reset <table>...\" to unstage)" ]] || false
