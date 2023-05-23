@@ -18,17 +18,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
-	"github.com/dolthub/dolt/go/libraries/doltcore/env/actions/commitwalk"
-	"github.com/dolthub/dolt/go/store/hash"
+	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/fatih/color"
+	"strings"
 
 	"github.com/dolthub/dolt/go/cmd/dolt/cli"
 	"github.com/dolthub/dolt/go/cmd/dolt/errhand"
-	"github.com/dolthub/dolt/go/libraries/doltcore/diff"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
-	"github.com/dolthub/dolt/go/libraries/doltcore/merge"
 	"github.com/dolthub/dolt/go/libraries/utils/argparser"
 )
 
@@ -39,6 +36,12 @@ var statusDocs = cli.CommandDocumentationContent{
 }
 
 type StatusCmd struct{}
+
+func (cmd StatusCmd) RequiresRepo() bool {
+	return false
+}
+
+var _ cli.RepoNotRequiredCommand = StatusCmd{}
 
 // Name is returns the name of the Dolt cli command. This is what is used on the command line to invoke the command
 func (cmd StatusCmd) Name() string {
@@ -63,215 +66,287 @@ func (cmd StatusCmd) ArgParser() *argparser.ArgParser {
 
 // Exec executes the command
 func (cmd StatusCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv, cliCtx cli.CliContext) int {
+	// parse arguments
 	ap := cmd.ArgParser()
 	help, _ := cli.HelpAndUsagePrinters(cli.CommandDocsForCommandString(commandStr, statusDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
+	showIngoredTables := apr.Contains(cli.ShowIgnoredFlag)
 
-	roots, err := dEnv.Roots(ctx)
+	// configure SQL engine
+	queryist, sqlCtx, closeFunc, err := cliCtx.QueryEngine(ctx)
+	if err != nil {
+		return handleStatusVErr(err)
+	}
+	if closeFunc != nil {
+		defer closeFunc()
+	}
+
+	// get ignored tables
+	ignorePatterns, err := getIgnoredTablePatternsFromSql(queryist, sqlCtx)
 	if err != nil {
 		return handleStatusVErr(err)
 	}
 
-	staged, notStaged, err := diff.GetStagedUnstagedTableDeltas(ctx, roots)
+	// get current branch name
+	branchName, err := getBranchName(queryist, sqlCtx)
 	if err != nil {
 		return handleStatusVErr(err)
 	}
 
-	ws, err := dEnv.WorkingSet(ctx)
-	if err != nil {
-		handleStatusVErr(err)
-	}
-
-	as, err := merge.GetMergeArtifactStatus(ctx, ws)
-	if err != nil {
-		handleStatusVErr(err)
-	}
-
-	err = PrintStatus(ctx, dEnv, staged, notStaged, apr.Contains(cli.ShowIgnoredFlag), as)
+	// get conflicts
+	conflicts, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_conflicts;")
 	if err != nil {
 		return handleStatusVErr(err)
 	}
-	return 0
-}
-
-func PrintStatus(ctx context.Context, dEnv *env.DoltEnv, stagedTbls, notStagedTbls []diff.TableDelta, showIgnoredTables bool, as merge.ArtifactStatus) error {
-	headRef, err := dEnv.RepoStateReader().CWBHeadRef()
-	if err != nil {
-		return err
+	conflictedTables := make(map[string]bool)
+	for _, row := range conflicts {
+		tableName := row[0].(string)
+		conflictedTables[tableName] = true
 	}
 
-	cli.Printf(branchHeader, headRef.GetPath())
-
-	err = printRemoteRefTrackingInfo(ctx, dEnv)
+	// get statuses
+	statusRows, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_status;")
 	if err != nil {
-		return err
+		return handleStatusVErr(err)
 	}
+	statusPresent := len(statusRows) > 0
 
-	mergeActive, err := isMergeActive(ctx, dEnv)
+	// staged/working tables
+	stagedTableNames := make(map[string]bool)
+	workingTableNames := make(map[string]bool)
+	diffs, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_diff where commit_hash='WORKING' OR commit_hash='STAGED';")
 	if err != nil {
-		return err
+		return handleStatusVErr(err)
 	}
-
-	if mergeActive {
-		if as.HasConflicts() && as.HasConstraintViolations() {
-			cli.Println(fmt.Sprintf(unmergedTablesHeader, "conflicts and constraint violations"))
-		} else if as.HasConflicts() {
-			cli.Println(fmt.Sprintf(unmergedTablesHeader, "conflicts"))
-		} else if as.HasConstraintViolations() {
-			cli.Println(fmt.Sprintf(unmergedTablesHeader, "constraint violations"))
+	for _, row := range diffs {
+		commitHash := row[0].(string)
+		tableName := row[1].(string)
+		if commitHash == "STAGED" {
+			stagedTableNames[tableName] = true
 		} else {
-			cli.Println(allMergedHeader)
+			workingTableNames[tableName] = true
 		}
 	}
 
-	n := printStagedDiffs(cli.CliOut, stagedTbls, true)
-	n, err = PrintDiffsNotStaged(ctx, dEnv, cli.CliOut, notStagedTbls, true, showIgnoredTables, n, as)
+	// get merge status
+	mergeRows, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_merge_status;")
 	if err != nil {
-		return err
+		return handleStatusVErr(err)
+	}
+	mergeActive := !(len(mergeRows) == 1 && mergeRows[0][0] == false)
+
+	// collect statuses
+	conflictsPresent := false
+	stagedTables := map[string]string{}
+	unstagedTables := map[string]string{}
+	untrackedTables := map[string]string{}
+	unmergedTables := map[string]string{}
+	ignoredTables := map[string]string{}
+	if statusPresent {
+		for _, row := range statusRows {
+			tableName := row[0].(string)
+			stagedData := row[1]
+			status := row[2].(string)
+
+			// determine if table is staged
+			var isStaged bool
+			if isStagedString, ok := stagedData.(string); ok {
+				isStaged = isStagedString == "1"
+			} else if isStagedBool, ok := stagedData.(bool); ok {
+				isStaged = isStagedBool
+			} else {
+				return handleStatusVErr(errors.New("unexpected type for staged column"))
+			}
+
+			// determine if the table should be ignored
+			ignoreTableValue, err := ignorePatterns.IsTableNameIgnored(tableName)
+			if err != nil {
+				return handleStatusVErr(err)
+			}
+			shouldIgnoreTable := ignoreTableValue == doltdb.Ignore
+
+			switch status {
+			case "renamed":
+				// for renamed tables, add both source and dest changes
+				parts := strings.Split(tableName, " -> ")
+				srcTableName := parts[0]
+				dstTableName := parts[1]
+
+				if workingTableNames[dstTableName] {
+					unstagedTables[srcTableName] = "deleted"
+					untrackedTables[dstTableName] = "new table"
+				} else if stagedTableNames[dstTableName] {
+					stagedTables[tableName] = status
+				}
+			case "conflict":
+				conflictsPresent = true
+				if isStaged {
+					stagedTables[tableName] = status
+				} else {
+					unmergedTables[tableName] = "both modified"
+				}
+			case "deleted", "modified", "added", "new table":
+				if shouldIgnoreTable {
+					ignoredTables[tableName] = status
+					continue
+				}
+
+				if isStaged {
+					stagedTables[tableName] = status
+				} else {
+					isTableConflicted := conflictedTables[tableName]
+					if !isTableConflicted {
+						if status == "new table" {
+							untrackedTables[tableName] = status
+						} else {
+							unstagedTables[tableName] = status
+						}
+					}
+				}
+
+			default:
+				panic(fmt.Sprintf("table %s, unexpected merge status: %s", tableName, status))
+			}
+		}
 	}
 
-	if !mergeActive && n == 0 {
+	printEverything(
+		branchName,
+		conflictsPresent, showIngoredTables, statusPresent, mergeActive,
+		stagedTables, unstagedTables, untrackedTables, unmergedTables, ignoredTables)
+
+	return 0
+}
+
+func getBranchName(queryist cli.Queryist, sqlCtx *sql.Context) (string, error) {
+	rows, err := getRowsForSql(queryist, sqlCtx, "select active_branch()")
+	if err != nil {
+		return "", err
+	}
+	if len(rows) != 1 {
+		return "", errors.New("expected one row in dolt_branches")
+	}
+	branchName := rows[0][0].(string)
+	return branchName, nil
+}
+
+func getRowsForSql(queryist cli.Queryist, sqlCtx *sql.Context, q string) ([]sql.Row, error) {
+	schema, ri, err := queryist.Query(sqlCtx, q)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := sql.RowIterToRows(sqlCtx, schema, ri)
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func getIgnoredTablePatternsFromSql(queryist cli.Queryist, sqlCtx *sql.Context) (doltdb.IgnorePatterns, error) {
+	var ignorePatterns []doltdb.IgnorePattern
+	ignoreRows, err := getRowsForSql(queryist, sqlCtx, fmt.Sprintf("select * from %s", doltdb.IgnoreTableName))
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range ignoreRows {
+		pattern := row[0].(string)
+		ignoreVal := row[1]
+
+		var ignore bool
+		if ignoreString, ok := ignoreVal.(string); ok {
+			ignore = ignoreString == "1"
+		} else if ignoreInt, ok := ignoreVal.(int8); ok {
+			ignore = ignoreInt == 1
+		} else {
+			return nil, errors.New(fmt.Sprintf("unexpected type for ignore column, value = %s", ignoreVal))
+		}
+
+		ip := doltdb.IgnorePattern{pattern, ignore}
+		ignorePatterns = append(ignorePatterns, ip)
+	}
+	return ignorePatterns, nil
+}
+
+func printEverything(
+	branchName string,
+	conflictsPresent, showIgnoredTables, statusPresent, mergeActive bool,
+	stagedTables, unstagedTables, untrackedTables, unmergedTables, ignoredTables map[string]string) {
+	statusFmt := "\t%-18s%s"
+
+	// branch name
+	cli.Printf(branchHeader, branchName)
+
+	// conflicts
+	if conflictsPresent {
+		cli.Println("\nYou have unmerged tables.")
+		cli.Println("  (fix conflicts and run \"dolt commit\")")
+		cli.Println("  (use \"dolt merge --abort\" to abort the merge)")
+	}
+
+	// staged tables
+	if len(stagedTables) > 0 {
+		cli.Println("Changes to be committed:")
+		cli.Println("  (use \"dolt reset <table>...\" to unstage)")
+		for tableName, status := range stagedTables {
+			text := fmt.Sprintf(statusFmt, status+":", tableName)
+			greenText := color.GreenString(text)
+			cli.Println(greenText)
+		}
+	}
+
+	// unstaged tables
+	if len(unstagedTables) > 0 {
+		cli.Println("\nChanges not staged for commit:")
+		cli.Println("  (use \"dolt add <table>\" to update what will be committed)")
+		cli.Println("  (use \"dolt checkout <table>\" to discard changes in working directory)")
+		for tableName, status := range unstagedTables {
+			text := fmt.Sprintf(statusFmt, status+":", tableName)
+			redText := color.RedString(text)
+			cli.Println(redText)
+		}
+	}
+
+	// untracked tables
+	if len(untrackedTables) > 0 {
+		cli.Println("\nUntracked tables:")
+		cli.Println("  (use \"dolt add <table>\" to include in what will be committed)")
+		for tableName, status := range untrackedTables {
+			text := fmt.Sprintf(statusFmt, status+":", tableName)
+			redText := color.RedString(text)
+			cli.Println(redText)
+		}
+	}
+
+	// unmerged paths
+	if len(unmergedTables) > 0 {
+		cli.Println("\nUnmerged paths:")
+		cli.Println("  (use \"dolt add <table>...\" to mark resolution)")
+		cli.Println("  (use \"dolt commit\" once resolved)")
+		for tableName, status := range unmergedTables {
+			text := fmt.Sprintf(statusFmt, status+":", tableName)
+			redText := color.RedString(text)
+			cli.Println(redText)
+		}
+	}
+
+	// ignored tables
+	if showIgnoredTables && len(ignoredTables) > 0 {
+		cli.Println("\nIgnored tables:")
+		cli.Println("  (use \"dolt add -f <table>\" to include in what will be committed)")
+		for tableName, status := range ignoredTables {
+			text := fmt.Sprintf(statusFmt, status+":", tableName)
+			redText := color.RedString(text)
+			cli.Println(redText)
+		}
+	}
+
+	// nothing to commit
+	if !statusPresent && !mergeActive {
 		cli.Println("nothing to commit, working tree clean")
 	}
-
-	return nil
 }
 
 func handleStatusVErr(err error) int {
 	cli.PrintErrln(errhand.VerboseErrorFromError(err).Verbose())
 	return 1
-}
-
-// printRemoteRefTrackingInfo prints remote tracking information if there is a remote branch set upstream from current branch
-func printRemoteRefTrackingInfo(ctx context.Context, dEnv *env.DoltEnv) error {
-	ddb := dEnv.DoltDB
-	rsr := dEnv.RepoStateReader()
-	headRef, err := rsr.CWBHeadRef()
-	if err != nil {
-		return err
-	}
-	branches, err := rsr.GetBranches()
-	if err != nil {
-		return err
-	}
-	upstream, hasUpstream := branches[headRef.GetPath()]
-	if !hasUpstream {
-		return nil
-	}
-
-	// Get local head branch
-	headCommitSpec, err := doltdb.NewCommitSpec(headRef.GetPath())
-	if err != nil {
-		return err
-	}
-	headCommit, err := ddb.Resolve(ctx, headCommitSpec, headRef)
-	if err != nil {
-		return err
-	}
-	headHash, err := headCommit.HashOf()
-	if err != nil {
-		return err
-	}
-
-	// Get remote tracking branch
-	remotes, err := rsr.GetRemotes()
-	if err != nil {
-		return err
-	}
-	remote, remoteOK := remotes[upstream.Remote]
-	if !remoteOK {
-		return nil
-	}
-	remoteTrackingRef, err := env.GetTrackingRef(upstream.Merge.Ref, remote)
-	if err != nil {
-		return err
-	}
-	remoteCommitSpec, err := doltdb.NewCommitSpec(remoteTrackingRef.GetPath())
-	if err != nil {
-		return err
-	}
-	remoteCommit, err := ddb.Resolve(ctx, remoteCommitSpec, remoteTrackingRef)
-	if err != nil {
-		return err
-	}
-	remoteHash, err := remoteCommit.HashOf()
-	if err != nil {
-		return err
-	}
-
-	// get common ancestor
-	ancCommit, err := doltdb.GetCommitAncestor(ctx, headCommit, remoteCommit)
-	if err != nil {
-		return err
-	}
-	ancHash, err := ancCommit.HashOf()
-	if err != nil {
-		return err
-	}
-
-	ahead := 0
-	behind := 0
-	if headHash != remoteHash {
-		behind, err = countCommitsInRange(ctx, ddb, remoteHash, ancHash)
-		if err != nil {
-			return err
-		}
-		ahead, err = countCommitsInRange(ctx, ddb, headHash, ancHash)
-		if err != nil {
-			return err
-		}
-	}
-
-	cli.Println(getRemoteTrackingMsg(remoteTrackingRef.GetPath(), ahead, behind))
-	return nil
-}
-
-// countCommitsInRange returns the number of commits between the given starting point to trace back to the given target point.
-// The starting commit must be a descendant of the target commit. Target commit must be a common ancestor commit.
-func countCommitsInRange(ctx context.Context, ddb *doltdb.DoltDB, startCommitHash, targetCommitHash hash.Hash) (int, error) {
-	itr, iErr := commitwalk.GetTopologicalOrderIterator(ctx, ddb, []hash.Hash{startCommitHash}, nil)
-	if iErr != nil {
-		return 0, iErr
-	}
-	count := 0
-	for {
-		hash, _, err := itr.Next(ctx)
-		if err == io.EOF {
-			return 0, errors.New("no match found to ancestor commit")
-		} else if err != nil {
-			return 0, err
-		}
-
-		if hash == targetCommitHash {
-			break
-		}
-		count += 1
-	}
-
-	return count, nil
-}
-
-// getRemoteTrackingMsg returns remote tracking information with given remote branch name, number of commits ahead and/or behind.
-func getRemoteTrackingMsg(remoteBranchName string, ahead int, behind int) string {
-	if ahead > 0 && behind > 0 {
-		return fmt.Sprintf(`Your branch and '%s' have diverged,
-and have %v and %v different commits each, respectively.
-  (use "dolt pull" to update your local branch)`, remoteBranchName, ahead, behind)
-	} else if ahead > 0 {
-		s := ""
-		if ahead > 1 {
-			s = "s"
-		}
-		return fmt.Sprintf(`Your branch is ahead of '%s' by %v commit%s.
-  (use "dolt push" to publish your local commits)`, remoteBranchName, ahead, s)
-	} else if behind > 0 {
-		s := ""
-		if behind > 1 {
-			s = "s"
-		}
-		return fmt.Sprintf(`Your branch is behind '%s' by %v commit%s, and can be fast-forwarded.
-  (use "dolt pull" to update your local branch)`, remoteBranchName, behind, s)
-	} else {
-		return fmt.Sprintf("Your branch is up to date with '%s'.", remoteBranchName)
-	}
 }
