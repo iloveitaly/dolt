@@ -125,7 +125,7 @@ teardown() {
 @test "sql-local-remote: test 'status' and switch between server/no server" {
     start_sql_server defaultDB
 
-    run dolt --verbose-engine-setup --user dolt status
+    run dolt --user dolt status
     [ "$status" -eq 0 ] || false
     [[ "$output" =~ "On branch main" ]] || false
     [[ "$output" =~ "Changes to be committed:" ]] || false
@@ -140,7 +140,7 @@ teardown() {
     [[ "$output" =~ "	new table:        v" ]] || false
     ! [[ "$output" =~ "   new table:        generated_foo" ]] || false
 
-    run dolt --verbose-engine-setup --user dolt status --ignored
+    run dolt --user dolt status --ignored
     [ "$status" -eq 0 ] || false
     [[ "$output" =~ "On branch main" ]] || false
     [[ "$output" =~ "Changes to be committed:" ]] || false
@@ -159,7 +159,7 @@ teardown() {
 
     stop_sql_server 1
 
-    run dolt --verbose-engine-setup status
+    run dolt status
     [ "$status" -eq 0 ] || false
     [[ "$output" =~ "On branch main" ]] || false
     [[ "$output" =~ "Changes to be committed:" ]] || false
@@ -174,7 +174,7 @@ teardown() {
     [[ "$output" =~ "	new table:        v" ]] || false
     ! [[ "$output" =~ "   new table:        generated_foo" ]] || false
 
-    run dolt --verbose-engine-setup --user dolt status --ignored
+    run dolt --user dolt status --ignored
     [ "$status" -eq 0 ] || false
     [[ "$output" =~ "On branch main" ]] || false
     [[ "$output" =~ "Changes to be committed:" ]] || false
