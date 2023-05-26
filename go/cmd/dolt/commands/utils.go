@@ -91,6 +91,92 @@ func NewArgFreeCliContext(ctx context.Context, dEnv *env.DoltEnv) (cli.CliContex
 	return cli.NewCliContext(argparser.NewEmptyResults(), lateBind)
 }
 
+// SqlEngineRowIter is a wrapper around sql.RowIter that converts SqlEngine data to MySQL data
+// Right now this only means bool->int8 conversion, but it could be expanded to other types.
+type SqlEngineRowIter struct {
+	iter   sql.RowIter
+	schema sql.Schema
+}
+
+var _ sql.RowIter = SqlEngineRowIter{}
+
+// NewSqlEngineRowIter creates a new SqlEngineRowIter
+func NewSqlEngineRowIter(iter sql.RowIter, schema sql.Schema) SqlEngineRowIter {
+	return SqlEngineRowIter{
+		iter:   iter,
+		schema: schema,
+	}
+}
+
+// Next returns the next sql.Row until all rows are returned at which point (nil, io.EOF) is returned.
+func (s SqlEngineRowIter) Next(ctx *sql.Context) (sql.Row, error) {
+	row, err := s.iter.Next(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert SqlEngine values to MySQL values
+	// Right now this is only for bool->int8
+	for i, col := range row {
+		if col == nil {
+			continue
+		}
+
+		colVal, changed, err := sqlEngineDataToMySql(col)
+		if err != nil {
+			return nil, err
+		}
+
+		if changed {
+			row[i] = colVal
+		}
+	}
+
+	return row, nil
+}
+
+func sqlEngineDataToMySql(data any) (result any, changed bool, err error) {
+	if boolVal, ok := data.(bool); ok {
+		var intVal int8
+		if boolVal {
+			intVal = 1
+		} else {
+			intVal = 0
+		}
+		return intVal, true, nil
+	}
+	return nil, false, nil
+}
+
+// Close closes the iterator.
+func (s SqlEngineRowIter) Close(c *sql.Context) error {
+	return s.iter.Close(c)
+}
+
+// SqlEngineQueryist is a wrapper around engine.SqlEngine that implements cli.Queryist
+type SqlEngineQueryist struct {
+	engine *engine.SqlEngine
+}
+
+var _ cli.Queryist = SqlEngineQueryist{}
+
+// NewSqlEngineQueryist creates a new SqlEngineQueryist
+func NewSqlEngineQueryist(engine *engine.SqlEngine) SqlEngineQueryist {
+	return SqlEngineQueryist{
+		engine: engine,
+	}
+}
+
+// Query executes a query and returns the schema and row iterator for the results
+func (s SqlEngineQueryist) Query(ctx *sql.Context, query string) (sql.Schema, sql.RowIter, error) {
+	schema, iter, err := s.engine.Query(ctx, query)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return schema, NewSqlEngineRowIter(iter, schema), nil
+}
+
 // BuildSqlEngineQueryist Utility function to build a local SQLEngine for use interacting with data on disk using
 // SQL queries. ctx, cwdFS, mrEnv, and apr must all be non-nil.
 func BuildSqlEngineQueryist(ctx context.Context, cwdFS filesys.Filesys, mrEnv *env.MultiRepoEnv, apr *argparser.ArgParseResults) (cli.LateBindQueryist, errhand.VerboseError) {
@@ -240,7 +326,8 @@ func newLateBindingEngine(
 
 		// Set client to specified user
 		sqlCtx.Session.SetClient(sql.Client{User: config.ServerUser, Address: config.ServerHost, Capabilities: 0})
-		return se, sqlCtx, func() { se.Close() }, nil
+		queryist := NewSqlEngineQueryist(se)
+		return queryist, sqlCtx, func() { se.Close() }, nil
 
 	}
 

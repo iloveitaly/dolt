@@ -78,10 +78,12 @@ INSERT INTO test VALUES (3);
 call dolt_commit('-a', '-m', 'this is a ff');
 call dolt_checkout('main');
 call dolt_merge('feature-branch');
+SQL
+    run dolt sql << SQL
 SELECT COUNT(*) > 0 FROM test WHERE pk=3;
 SQL
     log_status_eq 0
-    [[ "$output" =~ "true" ]] || false
+    [[ "$output" =~ "1" ]] || false
 
     run dolt sql -r csv -q "select count(*) from dolt_status"
     [ "${#lines[@]}" -eq 2 ]
@@ -228,8 +230,7 @@ SELECT COUNT(*) = 2 FROM test WHERE pk > 2;
 SQL
 
     log_status_eq 0
-    [[ "$output" =~ "true" ]] || false
-    [[ "$output" =~ "true" ]] || false
+    [[ "$output" =~ "1" ]] || false
     [[ "${lines[3]}" =~ "0" ]] || false
     ! [[ "$output" =~ "Updating" ]] || false
 
@@ -275,10 +276,12 @@ INSERT INTO test VALUES (3);
 call dolt_commit('-a', '-m', 'update feature-branch');
 call dolt_checkout('main');
 call dolt_merge('feature-branch', '-no-ff', '-m', 'this is a no-ff');
+SQL
+        run dolt sql << SQL
 SELECT COUNT(*) = 4 FROM dolt_log
 SQL
     log_status_eq 0
-    [[ "$output" =~ "true" ]] || false
+    [[ "$output" =~ "1" ]] || false
 
     run dolt log -n 1
     log_status_eq 0
@@ -293,10 +296,12 @@ INSERT INTO test VALUES (3);
 CALL DOLT_COMMIT('-a', '-m', 'update feature-branch');
 CALL DOLT_CHECKOUT('main');
 CALL DOLT_MERGE('feature-branch', '-no-ff', '-m', 'this is a no-ff');
+SQL
+        run dolt sql << SQL
 SELECT COUNT(*) = 4 FROM dolt_log
 SQL
     log_status_eq 0
-    [[ "$output" =~ "true" ]] || false
+    [[ "$output" =~ "1" ]] || false
 
     run dolt log -n 1
     log_status_eq 0
@@ -573,10 +578,12 @@ INSERT INTO test VALUES (3);
 CALL DOLT_COMMIT('-a', '-m', 'this is a ff');
 CALL DOLT_CHECKOUT('main');
 CALL DOLT_MERGE('feature-branch', '--squash');
+SQL
+    run dolt sql << SQL
 SELECT COUNT(*) > 0 FROM test WHERE pk=3;
 SQL
     log_status_eq 0
-    [[ "$output" =~ "true" ]] || false
+    [[ "$output" =~ "1" ]] || false
 
     run dolt log -n 1
     log_status_eq 0

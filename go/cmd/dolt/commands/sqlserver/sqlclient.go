@@ -38,7 +38,6 @@ import (
 	"github.com/dolthub/dolt/go/cmd/dolt/commands/engine"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
 	"github.com/dolthub/dolt/go/libraries/utils/argparser"
-	"github.com/dolthub/dolt/go/libraries/utils/filesys"
 	"github.com/dolthub/dolt/go/libraries/utils/iohelp"
 )
 
@@ -380,6 +379,8 @@ func (cmd SqlClientCmd) Exec(ctx context.Context, commandStr string, args []stri
 	return 0
 }
 
+// MysqlRowWrapper wraps a mysql.Rows object and implements sql.RowIter
+// NOTE: this wrapper treats all columns as strings
 type MysqlRowWrapper struct {
 	rows     *mysql.Rows
 	schema   sql.Schema
@@ -452,54 +453,4 @@ func secondsSince(start time.Time, end time.Time) float64 {
 	milliRemainder := (runTime - seconds*time.Second) / time.Millisecond
 	timeDisplay := float64(seconds) + float64(milliRemainder)*.001
 	return timeDisplay
-}
-
-// ConnectionQueryist executes queries by connecting to a running mySql server.
-type ConnectionQueryist struct {
-	connection *dbr.Connection
-}
-
-var _ cli.Queryist = ConnectionQueryist{}
-
-func (c ConnectionQueryist) Query(ctx *sql.Context, query string) (sql.Schema, sql.RowIter, error) {
-	rows, err := c.connection.QueryContext(ctx, query)
-	if err != nil {
-		return nil, nil, err
-	}
-	rowIter, err := NewMysqlRowWrapper(rows)
-	if err != nil {
-		return nil, nil, err
-	}
-	return rowIter.Schema(), rowIter, nil
-}
-
-// BuildConnectionStringQueryist returns a Queryist that connects to the server specified by the given server config. Presence in this
-// module isn't ideal, but it's the only way to get the server config into the queryist.
-func BuildConnectionStringQueryist(ctx context.Context, cwdFS filesys.Filesys, apr *argparser.ArgParseResults, port int, database string) (cli.LateBindQueryist, error) {
-	serverConfig, err := GetServerConfig(cwdFS, apr)
-	if err != nil {
-		return nil, err
-	}
-
-	parsedMySQLConfig, err := mysqlDriver.ParseDSN(ConnectionString(serverConfig, database))
-	if err != nil {
-		return nil, err
-	}
-
-	parsedMySQLConfig.Addr = fmt.Sprintf("localhost:%d", port)
-
-	mysqlConnector, err := mysqlDriver.NewConnector(parsedMySQLConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	conn := &dbr.Connection{DB: mysql.OpenDB(mysqlConnector), EventReceiver: nil, Dialect: dialect.MySQL}
-
-	queryist := ConnectionQueryist{connection: conn}
-
-	var lateBind cli.LateBindQueryist = func(ctx context.Context) (cli.Queryist, *sql.Context, func(), error) {
-		return queryist, sql.NewContext(ctx), func() { conn.Conn(ctx) }, nil
-	}
-
-	return lateBind, nil
 }
