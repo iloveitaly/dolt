@@ -18,6 +18,7 @@ import (
 	"context"
 	mysql "database/sql"
 	"fmt"
+	"github.com/dolthub/go-mysql-server/sql/types"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,7 +27,6 @@ import (
 
 	"github.com/abiosoft/readline"
 	"github.com/dolthub/go-mysql-server/sql"
-	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/dolthub/ishell"
 	"github.com/fatih/color"
 	mysqlDriver "github.com/go-sql-driver/mysql"
@@ -380,6 +380,8 @@ func (cmd SqlClientCmd) Exec(ctx context.Context, commandStr string, args []stri
 	return 0
 }
 
+// MysqlRowWrapper wraps a mysql.Rows object and implements sql.RowIter
+// NOTE: this wrapper treats all columns as strings
 type MysqlRowWrapper struct {
 	rows     *mysql.Rows
 	schema   sql.Schema
@@ -466,7 +468,8 @@ func (c ConnectionQueryist) Query(ctx *sql.Context, query string) (sql.Schema, s
 	if err != nil {
 		return nil, nil, err
 	}
-	rowIter, err := NewMysqlRowWrapper(rows)
+
+	rowIter, err := commands.NewMySqlRowsIter(ctx, rows)
 	if err != nil {
 		return nil, nil, err
 	}

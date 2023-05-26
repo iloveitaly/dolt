@@ -81,6 +81,7 @@ func (bt *BranchesTable) Schema() sql.Schema {
 		{Name: "latest_committer_email", Type: types.Text, Source: tableName, PrimaryKey: false, Nullable: true},
 		{Name: "latest_commit_date", Type: types.Datetime, Source: tableName, PrimaryKey: false, Nullable: true},
 		{Name: "latest_commit_message", Type: types.Text, Source: tableName, PrimaryKey: false, Nullable: true},
+		{Name: "remote", Type: types.Text, Source: tableName, PrimaryKey: false, Nullable: true},
 	}
 }
 
