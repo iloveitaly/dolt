@@ -106,7 +106,11 @@ func scanResultRow(results *dsql.Rows, cols []*dsql.ColumnType) (sql.Row, error)
 	return scanRow, nil
 }
 
+// updateScanRowForInteger updates the scanRow integer values to their correct types.
 func updateScanRowForInteger(val interface{}, scanRow sql.Row, i int, isUnsigned bool, typeName string) error {
+	// Note: We use dsql.NullInt64 here because the sql driver will return a dsql.NullInt64 for all integer types
+	// There is also no dsql.NullUint64 (see https://github.com/golang/go/issues/47953 for more info) so we need to use
+	// this unsigned hack to get the correct values.
 	sqlVal := val.(*dsql.NullInt64)
 	if !sqlVal.Valid {
 		scanRow[i] = nil
@@ -151,6 +155,7 @@ func updateScanRowForInteger(val interface{}, scanRow sql.Row, i int, isUnsigned
 	return nil
 }
 
+// updateScanRowByVal updates the scanRow value at a given index to the correct type.
 func updateScanRowByVal(val interface{}, scanRow sql.Row, i int, isUnsigned bool) {
 	v := reflect.ValueOf(val).Elem().Interface()
 	switch t := v.(type) {
@@ -182,36 +187,6 @@ func updateScanRowByVal(val interface{}, scanRow sql.Row, i int, isUnsigned bool
 				scanRow[i] = uint64(t.Float64)
 			} else {
 				scanRow[i] = t.Float64
-			}
-		} else {
-			scanRow[i] = nil
-		}
-	case dsql.NullInt16:
-		if t.Valid {
-			if isUnsigned {
-				scanRow[i] = uint16(t.Int16)
-			} else {
-				scanRow[i] = t.Int16
-			}
-		} else {
-			scanRow[i] = nil
-		}
-	case dsql.NullInt32:
-		if t.Valid {
-			if isUnsigned {
-				scanRow[i] = uint32(t.Int32)
-			} else {
-				scanRow[i] = t.Int32
-			}
-		} else {
-			scanRow[i] = nil
-		}
-	case dsql.NullInt64:
-		if t.Valid {
-			if isUnsigned {
-				scanRow[i] = uint64(t.Int64)
-			} else {
-				scanRow[i] = t.Int64
 			}
 		} else {
 			scanRow[i] = nil
