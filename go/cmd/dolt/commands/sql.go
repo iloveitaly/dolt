@@ -265,13 +265,13 @@ func (cmd SqlCmd) Exec(ctx context.Context, commandStr string, args []string, dE
 				return sqlHandleVErrAndExitCode(queryist, errhand.VerboseErrorFromError(err), usage)
 			}
 		} else if runInBatchMode {
-			se, ok := queryist.(*engine.SqlEngine)
+			seq, ok := queryist.(SqlEngineQueryist)
 			if !ok {
 				misuse := fmt.Errorf("Using batch with non-local access pattern. Stop server if it is running")
 				return sqlHandleVErrAndExitCode(queryist, errhand.VerboseErrorFromError(misuse), usage)
 			}
 
-			verr := execBatch(sqlCtx, se, input, continueOnError, format)
+			verr := execBatch(sqlCtx, seq.engine, input, continueOnError, format)
 			if verr != nil {
 				return sqlHandleVErrAndExitCode(queryist, verr, usage)
 			}
@@ -415,14 +415,14 @@ func queryMode(
 	_, continueOnError := apr.GetValue(continueFlag)
 
 	if batchMode {
-		se, ok := qryist.(*engine.SqlEngine)
+		seq, ok := qryist.(SqlEngineQueryist)
 		if !ok {
 			misuse := fmt.Errorf("Using batch with non-local access pattern. Stop server if it is running")
-			return sqlHandleVErrAndExitCode(se, errhand.VerboseErrorFromError(misuse), usage)
+			return sqlHandleVErrAndExitCode(qryist, errhand.VerboseErrorFromError(misuse), usage)
 		}
 
 		batchInput := strings.NewReader(query)
-		verr := execBatch(ctx, se, batchInput, continueOnError, format)
+		verr := execBatch(ctx, seq.engine, batchInput, continueOnError, format)
 		if verr != nil {
 			return sqlHandleVErrAndExitCode(qryist, verr, usage)
 		}
