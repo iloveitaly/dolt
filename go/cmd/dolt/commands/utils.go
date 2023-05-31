@@ -17,6 +17,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"github.com/dolthub/go-mysql-server/sql/types"
 	"path/filepath"
 
 	"github.com/dolthub/go-mysql-server/sql"
@@ -250,6 +251,13 @@ func sqlEngineDataToMySql(data any) (result any, changed bool, err error) {
 			intVal = 0
 		}
 		return intVal, true, nil
+	}
+	if jsonDoc, ok := data.(types.JSONDocument); ok {
+		jsonText, err := jsonDoc.ToString(nil)
+		if err != nil {
+			return nil, false, err
+		}
+		return jsonText, true, nil
 	}
 	return nil, false, nil
 }

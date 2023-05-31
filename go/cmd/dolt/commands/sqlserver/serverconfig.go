@@ -572,9 +572,21 @@ func ConnectionString(config ServerConfig, database string) string {
 	} else {
 		dsn = fmt.Sprintf("%v:%v@tcp(%v:%v)/%v", user, config.Password(), config.Host(), config.Port(), database)
 	}
+
+	questionMarkPresent := false
 	if config.AllowCleartextPasswords() {
 		dsn += "?allowCleartextPasswords=1"
+		questionMarkPresent = true
 	}
+
+	// add "parseTime=true" to the DSN
+	if questionMarkPresent {
+		dsn += "&"
+	} else {
+		dsn += "?"
+	}
+	dsn += "parseTime=true"
+
 	return dsn
 }
 

@@ -16,8 +16,10 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/dolthub/dolt/go/libraries/doltcore/ref"
 	"strings"
 
 	"github.com/dolthub/go-mysql-server/sql"
@@ -31,7 +33,12 @@ import (
 )
 
 type printData struct {
-	branchName string
+	branchName,
+	remoteName,
+	remoteBranchName string
+
+	ahead,
+	behind uint
 
 	conflictsPresent,
 	showIgnoredTables,
@@ -171,7 +178,7 @@ func (cmd StatusCmd) createPrintData(err error, queryist cli.Queryist, sqlCtx *s
 	}
 
 	// get merge status
-	mergeRows, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_merge_status;")
+	mergeRows, err := getRowsForSql(queryist, sqlCtx, "select is_merging from dolt_merge_status;")
 	if err != nil {
 		return nil, err
 	}
@@ -185,34 +192,90 @@ func (cmd StatusCmd) createPrintData(err error, queryist cli.Queryist, sqlCtx *s
 	}
 
 	// get local branches
-	localBranches, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_branches;")
+	localBranches, err := getRowsForSql(queryist, sqlCtx, "select name, hash, remote from dolt_branches;")
 	if err != nil {
 		return nil, err
 	}
+	var ahead uint = 0
+	var behind uint = 0
+	remoteName := ""
 	currentBranchCommit := ""
+	remoteBranchCommit := ""
+	remoteBranchName := ""
 	for _, row := range localBranches {
 		branch := row[0].(string)
 		if branch == branchName {
-			hash := row[2].(string)
-			currentBranchCommit = hash
+			currentBranchCommit = row[1].(string)
+			remoteName = row[2].(string)
 		}
 	}
 	if currentBranchCommit == "" {
 		return nil, fmt.Errorf("could not find current branch commit")
 	}
 
-	//// get dolt remotes
-	//remotes, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_remotes;")
-	//if err != nil {
-	//	return nil, err
-	//}
-	//
-	//// get remote branches
-	//remoteBranches, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_remote_branches;")
-	//if err != nil {
-	//	return nil, err
-	//}
-	//remoteBranchName := "remotes/origin/master"
+	if len(remoteName) > 0 {
+		// get dolt remotes
+		q := fmt.Sprintf("select name, url, fetch_specs, params from dolt_remotes where name = '%s';", remoteName)
+		remotes, err := getRowsForSql(queryist, sqlCtx, q)
+		if err != nil {
+			return nil, err
+		}
+		if len(remotes) != 1 {
+			return nil, fmt.Errorf("could not find remote %s", remoteName)
+		}
+
+		var fetchSpecs []string
+		err = json.Unmarshal([]byte(remotes[0][2].(string)), &fetchSpecs)
+		if err != nil {
+			return nil, err
+		}
+
+		var params map[string]string
+		err = json.Unmarshal([]byte(remotes[0][3].(string)), &params)
+		if err != nil {
+			return nil, err
+		}
+
+		remote := env.Remote{
+			Name:       remotes[0][0].(string),
+			Url:        remotes[0][1].(string),
+			FetchSpecs: fetchSpecs,
+			Params:     params,
+		}
+
+		branchRef := ref.NewBranchRef(branchName)
+		remoteRef, err := env.GetTrackingRef(branchRef, remote)
+		if err != nil {
+			return nil, err
+		}
+		remoteBranchName = remoteRef.GetPath()
+		remoteBranchRef := fmt.Sprintf("remotes/%s", remoteBranchName)
+
+		// get remote branches
+		q = fmt.Sprintf("select * from dolt_remote_branches where name = '%s';", remoteBranchRef)
+		remoteBranches, err := getRowsForSql(queryist, sqlCtx, q)
+		if err != nil {
+			return nil, err
+		}
+		if len(remoteBranches) != 1 {
+			return nil, fmt.Errorf("could not find remote branch %s", remoteBranchRef)
+		}
+		remoteBranchCommit = remoteBranches[0][1].(string)
+
+		q = fmt.Sprintf("call dolt_count_commits('--from', '%s', '--to', '%s')", currentBranchCommit, remoteBranchCommit)
+		rows, err := getRowsForSql(queryist, sqlCtx, q)
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) != 1 {
+			return nil, fmt.Errorf("could not count commits between %s and %s", currentBranchCommit, remoteBranchCommit)
+		}
+		aheadDb := rows[0][0].(uint64)
+		behindDb := rows[0][1].(uint64)
+
+		ahead = uint(aheadDb)
+		behind = uint(behindDb)
+	}
 
 	// get statuses
 	statusRows, err := getRowsForSql(queryist, sqlCtx, "select * from dolt_status;")
@@ -312,6 +375,10 @@ func (cmd StatusCmd) createPrintData(err error, queryist cli.Queryist, sqlCtx *s
 
 	pd := printData{
 		branchName:                branchName,
+		remoteName:                remoteName,
+		remoteBranchName:          remoteBranchName,
+		ahead:                     ahead,
+		behind:                    behind,
 		conflictsPresent:          conflictsPresent,
 		showIgnoredTables:         showIgnoredTables,
 		statusPresent:             statusPresent,
@@ -346,7 +413,6 @@ func getRowsForSql(queryist cli.Queryist, sqlCtx *sql.Context, q string) ([]sql.
 	if err != nil {
 		return nil, err
 	}
-
 	rows, err := sql.RowIterToRows(sqlCtx, schema, ri)
 	if err != nil {
 		return nil, err
@@ -388,7 +454,35 @@ func printEverything(data *printData) error {
 	// branch name
 	cli.Printf(branchHeader, data.branchName)
 
-	// TODO: remote tracking info
+	// remote info
+	if data.remoteName != "" {
+		remoteBranchName := data.remoteBranchName
+		ahead := data.ahead
+		behind := data.behind
+
+		if ahead > 0 && behind > 0 {
+			cli.Printf(`Your branch and '%s' have diverged,
+and have %v and %v different commits each, respectively.
+  (use "dolt pull" to update your local branch)`, remoteBranchName, ahead, behind)
+		} else if ahead > 0 {
+			s := ""
+			if ahead > 1 {
+				s = "s"
+			}
+			cli.Printf(`Your branch is ahead of '%s' by %v commit%s.
+  (use "dolt push" to publish your local commits)`, remoteBranchName, ahead, s)
+		} else if behind > 0 {
+			s := ""
+			if behind > 1 {
+				s = "s"
+			}
+			cli.Printf(`Your branch is behind '%s' by %v commit%s, and can be fast-forwarded.
+  (use "dolt pull" to update your local branch)`, remoteBranchName, behind, s)
+		} else {
+			cli.Printf("Your branch is up to date with '%s'.", remoteBranchName)
+		}
+		changesPresent = true
+	}
 
 	// merge info
 	if data.mergeActive {
