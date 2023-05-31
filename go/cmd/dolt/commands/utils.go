@@ -17,6 +17,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"github.com/dolthub/go-mysql-server/sql/types"
 	"path/filepath"
 
 	"github.com/dolthub/go-mysql-server/sql"
@@ -116,13 +117,13 @@ func (s SqlEngineRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 	}
 
 	// Convert SqlEngine values to MySQL values
-	// Right now this is only for bool->int8
-	for i, col := range row {
-		if col == nil {
+	for i, val := range row {
+		if val == nil {
 			continue
 		}
 
-		colVal, changed, err := sqlEngineDataToMySql(col)
+		column := s.schema[i]
+		colVal, changed, err := sqlEngineDataToMySql(val, column)
 		if err != nil {
 			return nil, err
 		}
@@ -135,7 +136,7 @@ func (s SqlEngineRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 	return row, nil
 }
 
-func sqlEngineDataToMySql(data any) (result any, changed bool, err error) {
+func sqlEngineDataToMySql(data any, column *sql.Column) (result any, changed bool, err error) {
 	if boolVal, ok := data.(bool); ok {
 		var intVal int8
 		if boolVal {
@@ -144,6 +145,19 @@ func sqlEngineDataToMySql(data any) (result any, changed bool, err error) {
 			intVal = 0
 		}
 		return intVal, true, nil
+	}
+	if jsonDoc, ok := data.(types.JSONDocument); ok {
+		jsonText, err := jsonDoc.ToString(nil)
+		if err != nil {
+			return nil, false, err
+		}
+		return jsonText, true, nil
+	}
+	if types.IsBit(column.Type) {
+		if bitVal, ok := data.(uint64); ok {
+			hex := fmt.Sprintf("%#x", bitVal)
+			return hex, true, nil
+		}
 	}
 	return nil, false, nil
 }

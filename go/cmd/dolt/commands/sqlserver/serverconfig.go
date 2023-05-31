@@ -586,6 +586,15 @@ func ConnectionString(config ServerConfig, database string) string {
 	if config.AllowCleartextPasswords() {
 		dsn += "?allowCleartextPasswords=1"
 	}
+	// add "parseTime=true" to the DSN
+	if strings.Index(dsn, "parseTime") == -1 {
+		if strings.Index(dsn, "?") == -1 {
+			dsn += "?parseTime=true"
+		} else {
+			dsn += "&parseTime=true"
+		}
+	}
+
 	return dsn
 }
 

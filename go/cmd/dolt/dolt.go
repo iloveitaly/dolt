@@ -675,25 +675,6 @@ func buildGlobalArgs() *argparser.ArgParser {
 	return ap
 }
 
-// ConnectionQueryist executes queries by connecting to a running mySql server.
-type ConnectionQueryist struct {
-	connection *dbr.Connection
-}
-
-var _ cli.Queryist = ConnectionQueryist{}
-
-func (c ConnectionQueryist) Query(ctx *sql.Context, query string) (sql.Schema, sql.RowIter, error) {
-	rows, err := c.connection.QueryContext(ctx, query)
-	if err != nil {
-		return nil, nil, err
-	}
-	rowIter, err := commands.NewMySqlRowsIter(ctx, rows)
-	if err != nil {
-		return nil, nil, err
-	}
-	return rowIter.Schema(), rowIter, nil
-}
-
 // BuildConnectionStringQueryist returns a Queryist that connects to the server specified by the given server config. Presence in this
 // module isn't ideal, but it's the only way to get the server config into the queryist.
 func BuildConnectionStringQueryist(ctx context.Context, cwdFS filesys.Filesys, apr *argparser.ArgParseResults, port int, database string) (cli.LateBindQueryist, error) {
@@ -716,7 +697,7 @@ func BuildConnectionStringQueryist(ctx context.Context, cwdFS filesys.Filesys, a
 
 	conn := &dbr.Connection{DB: mysql.OpenDB(mysqlConnector), EventReceiver: nil, Dialect: dialect.MySQL}
 
-	queryist := ConnectionQueryist{connection: conn}
+	queryist := commands.NewConnectionQueryist(conn)
 
 	var lateBind cli.LateBindQueryist = func(ctx context.Context) (cli.Queryist, *sql.Context, func(), error) {
 		return queryist, sql.NewContext(ctx), func() { conn.Conn(ctx) }, nil

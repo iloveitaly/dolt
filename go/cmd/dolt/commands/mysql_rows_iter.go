@@ -3,12 +3,37 @@ package commands
 import (
 	dsql "database/sql"
 	"fmt"
+	"github.com/dolthub/dolt/go/cmd/dolt/cli"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/parse"
+	"github.com/gocraft/dbr/v2"
 	"io"
 	"reflect"
 	"strings"
 )
+
+// ConnectionQueryist executes queries by connecting to a running mySql server.
+type ConnectionQueryist struct {
+	connection *dbr.Connection
+}
+
+func NewConnectionQueryist(connection *dbr.Connection) ConnectionQueryist {
+	return ConnectionQueryist{connection: connection}
+}
+
+var _ cli.Queryist = ConnectionQueryist{}
+
+func (c ConnectionQueryist) Query(ctx *sql.Context, query string) (sql.Schema, sql.RowIter, error) {
+	rows, err := c.connection.QueryContext(ctx, query)
+	if err != nil {
+		return nil, nil, err
+	}
+	rowIter, err := NewMySqlRowsIter(ctx, rows)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rowIter.Schema(), rowIter, nil
+}
 
 // MySqlRowsIter is an iterator over rows returned by MySQL
 type MySqlRowsIter struct {
@@ -94,13 +119,14 @@ func scanResultRow(results *dsql.Rows, cols []*dsql.ColumnType) (sql.Row, error)
 			typeName = strings.Replace(typeName, "unsigned", "", 1)
 			typeName = strings.TrimSpace(typeName)
 		}
+
 		if strings.HasSuffix(typeName, "int") {
 			err := updateScanRowForInteger(val, scanRow, i, isUnsigned, typeName)
 			if err != nil {
 				return nil, err
 			}
 		} else {
-			updateScanRowByVal(val, scanRow, i, isUnsigned)
+			updateScanRowByVal(val, scanRow, i, isUnsigned, typeName)
 		}
 	}
 	return scanRow, nil
@@ -156,7 +182,7 @@ func updateScanRowForInteger(val interface{}, scanRow sql.Row, i int, isUnsigned
 }
 
 // updateScanRowByVal updates the scanRow value at a given index to the correct type.
-func updateScanRowByVal(val interface{}, scanRow sql.Row, i int, isUnsigned bool) {
+func updateScanRowByVal(val interface{}, scanRow sql.Row, i int, isUnsigned bool, typeName string) {
 	v := reflect.ValueOf(val).Elem().Interface()
 	switch t := v.(type) {
 	case dsql.RawBytes:
@@ -183,10 +209,10 @@ func updateScanRowByVal(val interface{}, scanRow sql.Row, i int, isUnsigned bool
 		}
 	case dsql.NullFloat64:
 		if t.Valid {
-			if isUnsigned {
-				scanRow[i] = uint64(t.Float64)
-			} else {
+			if typeName == "double" {
 				scanRow[i] = t.Float64
+			} else {
+				scanRow[i] = float32(t.Float64)
 			}
 		} else {
 			scanRow[i] = nil
@@ -204,7 +230,8 @@ func updateScanRowByVal(val interface{}, scanRow sql.Row, i int, isUnsigned bool
 			scanRow[i] = nil
 		}
 	default:
-		scanRow[i] = t
+		panic("unknown type")
+		//scanRow[i] = t
 	}
 }
 
