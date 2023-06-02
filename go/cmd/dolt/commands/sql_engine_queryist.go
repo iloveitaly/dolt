@@ -19,7 +19,7 @@ func (s SqlEngineQueryist) Query(ctx *sql.Context, query string) (sql.Schema, sq
 	}
 
 	newIter := NewSqlEngineRowIter(iter, schema)
-	return newIter.newSchema, newIter, nil
+	return newIter.oldSchema, newIter, nil
 }
 
 var _ cli.Queryist = SqlEngineQueryist{}
