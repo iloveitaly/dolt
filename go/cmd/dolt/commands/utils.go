@@ -247,28 +247,18 @@ func newLateBindingEngine(
 	return lateBinder, nil
 }
 
-<<<<<<< HEAD
 func getRowsForSql(queryist cli.Queryist, sqlCtx *sql.Context, query string) ([]sql.Row, error) {
 	schema, rowIter, err := queryist.Query(sqlCtx, query)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := sql.RowIterToRows(sqlCtx, schema, rowIter)
-=======
-func getRowsForSql(queryist cli.Queryist, sqlCtx *sql.Context, q string) ([]sql.Row, error) {
-	schema, ri, err := queryist.Query(sqlCtx, q)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := sql.RowIterToRows(sqlCtx, schema, ri)
->>>>>>> 27b18f6eb (WIP - getting `dolt diff` to work)
 	if err != nil {
 		return nil, err
 	}
 
 	return rows, nil
 }
-<<<<<<< HEAD
 
 func getActiveBranchName(sqlCtx *sql.Context, queryEngine cli.Queryist) (string, error) {
 	query := "SELECT active_branch()"
@@ -290,5 +280,3 @@ func getActiveBranchName(sqlCtx *sql.Context, queryEngine cli.Queryist) (string,
 	}
 	return branchName, nil
 }
-=======
->>>>>>> 27b18f6eb (WIP - getting `dolt diff` to work)

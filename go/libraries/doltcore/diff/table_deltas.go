@@ -90,7 +90,6 @@ type TableDeltaSummary struct {
 	FromTableName string
 	ToTableName   string
 	AlterStmts    []string
-	PkChanged     bool
 }
 
 // DeepEquals compares all attributes of a foreign key to another, including name and
@@ -735,8 +734,6 @@ func GetNonCreateNonDropTableSqlSchemaDiff(tds TableDeltaSummary, fromTableInfo,
 	if eq && !hasFkChanges(fromTableInfo, toTableInfo) {
 		return ddlStatements, nil
 	}
-
-	ddlStatements = append(ddlStatements, tds.AlterStmts...)
 
 	// Print changes between a primary key set change. It contains an ALTER TABLE DROP and an ALTER TABLE ADD
 	if !schema.ColCollsAreEqual(fromSch.GetPKCols(), toSch.GetPKCols()) {

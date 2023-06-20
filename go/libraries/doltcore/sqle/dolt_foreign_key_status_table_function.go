@@ -16,12 +16,13 @@ package sqle
 
 import (
 	"fmt"
-	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
-	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
-	"github.com/dolthub/go-mysql-server/sql"
-	"github.com/dolthub/go-mysql-server/sql/types"
 	"io"
 
+	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/types"
+
+	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
+	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/dsess"
 )
 
@@ -235,7 +236,23 @@ func (ds *ForeignKeyStatusTableFunction) RowIter(ctx *sql.Context, row sql.Row) 
 }
 
 func getForeignKeyRows(fk doltdb.ForeignKey, tableSch schema.Schema, refTableSch schema.Schema) ([]sql.Row, error) {
-	rows := []sql.Row{}
+
+	var tableColumnNames []string
+	for _, colTag := range fk.TableColumns {
+		col, ok := tableSch.GetAllCols().GetByTag(colTag)
+		if !ok {
+			return nil, fmt.Errorf("unable to get column for tag %d", colTag)
+		}
+		tableColumnNames = append(tableColumnNames, col.Name)
+	}
+	var referenceTableColumNames []string
+	for _, colTag := range fk.ReferencedTableColumns {
+		col, ok := refTableSch.GetAllCols().GetByTag(colTag)
+		if !ok {
+			return nil, fmt.Errorf("unable to get column for tag %d", colTag)
+		}
+		referenceTableColumNames = append(referenceTableColumNames, col.Name)
+	}
 
 	baseRow := sql.NewRow(
 		fk.Name,                 // 0
@@ -251,38 +268,36 @@ func getForeignKeyRows(fk doltdb.ForeignKey, tableSch schema.Schema, refTableSch
 		"",                      // 10
 		"",                      // 11
 	)
-
-	for _, colTag := range fk.TableColumns {
-		row1 := baseRow.Copy()
-		col, ok := tableSch.GetAllCols().GetByTag(colTag)
-		if !ok {
-			return nil, fmt.Errorf("unable to get column for tag %d", colTag)
+	rows := []sql.Row{baseRow}
+	if fk.IsResolved() {
+		if len(tableColumnNames) > 0 {
+			rows = addColToAllRows(rows, 4, tableColumnNames...)
 		}
-		row1[4] = col.Name
-
-		for _, refColTag := range fk.ReferencedTableColumns {
-			row2 := row1.Copy()
-			refCol, ok := refTableSch.GetAllCols().GetByTag(refColTag)
-			if !ok {
-				return nil, fmt.Errorf("unable to get reference column for tag %d", refColTag)
-			}
-			row2[7] = refCol.Name
-
-			for _, utc := range fk.UnresolvedFKDetails.TableColumns {
-				row3 := row2.Copy()
-				row3[10] = utc
-
-				for _, urtc := range fk.UnresolvedFKDetails.ReferencedTableColumns {
-					row4 := row3.Copy()
-					row4[11] = urtc
-
-					rows = append(rows, row4)
-				}
-			}
+		if len(referenceTableColumNames) > 0 {
+			rows = addColToAllRows(rows, 7, referenceTableColumNames...)
+		}
+	} else {
+		if len(fk.UnresolvedFKDetails.TableColumns) > 0 {
+			rows = addColToAllRows(rows, 10, fk.UnresolvedFKDetails.TableColumns...)
+		}
+		if len(fk.UnresolvedFKDetails.ReferencedTableColumns) > 0 {
+			rows = addColToAllRows(rows, 11, fk.UnresolvedFKDetails.ReferencedTableColumns...)
 		}
 	}
 
 	return rows, nil
+}
+
+func addColToAllRows(rows []sql.Row, colIndex int, data ...string) []sql.Row {
+	newRows := []sql.Row{}
+	for _, datum := range data {
+		for _, row := range rows {
+			newRow := row.Copy()
+			newRow[colIndex] = datum
+			newRows = append(newRows, newRow)
+		}
+	}
+	return newRows
 }
 
 // evaluateArguments returns ref.
