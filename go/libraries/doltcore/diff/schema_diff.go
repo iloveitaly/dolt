@@ -15,9 +15,9 @@
 package diff
 
 import (
+	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"reflect"
 
-	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 )
 
@@ -146,10 +146,69 @@ func DiffSchIndexes(fromSch, toSch schema.Schema) (diffs []IndexDifference) {
 	return diffs
 }
 
+type ForeignKeyInfoDifference struct {
+	DiffType SchemaChangeType
+	From     ForeignKeyInfo
+	To       ForeignKeyInfo
+}
+
 type ForeignKeyDifference struct {
 	DiffType SchemaChangeType
 	From     doltdb.ForeignKey
 	To       doltdb.ForeignKey
+}
+
+// DiffForeignKeyInfos matches two sets of ForeignKeys based on column definitions.
+// It returns matched and unmatched ForeignKeys as a slice of ForeignKeyDifferences.
+func DiffForeignKeyInfos(fromFks, toFKs []ForeignKeyInfo) (diffs []ForeignKeyInfoDifference) {
+	for _, from := range fromFks {
+		matched := false
+		for _, to := range toFKs {
+			if reflect.DeepEqual(from.ReferencedTableColumns, to.ReferencedTableColumns) &&
+				reflect.DeepEqual(from.TableColumns, to.TableColumns) {
+
+				matched = true
+				d := ForeignKeyInfoDifference{
+					DiffType: SchDiffModified,
+					From:     from,
+					To:       to,
+				}
+
+				if from.DeepEquals(to) {
+					d.DiffType = SchDiffNone
+				}
+				diffs = append(diffs, d)
+
+				break
+			}
+		}
+
+		if !matched {
+			diffs = append(diffs, ForeignKeyInfoDifference{
+				DiffType: SchDiffRemoved,
+				From:     from,
+			})
+		}
+	}
+
+	for _, to := range toFKs {
+		seen := false
+		for _, d := range diffs {
+			if d.To.DeepEquals(to) {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			continue
+		}
+
+		diffs = append(diffs, ForeignKeyInfoDifference{
+			DiffType: SchDiffAdded,
+			To:       to,
+		})
+	}
+	return diffs
 }
 
 // DiffForeignKeys matches two sets of ForeignKeys based on column definitions.
