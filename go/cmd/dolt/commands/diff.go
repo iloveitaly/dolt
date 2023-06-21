@@ -798,7 +798,7 @@ func getTableInfoAtRef(queryist cli.Queryist, sqlCtx *sql.Context, tableName str
 		return diff.TableInfo{}, fmt.Errorf("error: unable to get foreign keys for table '%s': %w", tableName, err)
 	}
 
-	sch, createStmt, err := getTableSchemaAtRef(queryist, sqlCtx, tableName, ref, fks)
+	sch, createStmt, err := getTableSchemaAtRef(queryist, sqlCtx, tableName, ref)
 	if err != nil {
 		return diff.TableInfo{}, fmt.Errorf("error: unable to get schema for table '%s': %w", tableName, err)
 	}
@@ -822,11 +822,7 @@ func getFkParentSchemas(queryist cli.Queryist, sqlCtx *sql.Context, fks []diff.F
 	parentSchs := map[string]schema.Schema{}
 	for _, fk := range fks {
 		parentTableName := fk.ReferencedTableName
-		parentFks, err := getForeignKeysForTable(queryist, sqlCtx, parentTableName, ref)
-		if err != nil {
-			return nil, fmt.Errorf("error: unable to get foreign keys for table '%s': %w", parentTableName, err)
-		}
-		sch, _, err := getTableSchemaAtRef(queryist, sqlCtx, parentTableName, ref, parentFks)
+		sch, _, err := getTableSchemaAtRef(queryist, sqlCtx, parentTableName, ref)
 		if err != nil {
 			return nil, fmt.Errorf("error: unable to get schema for table '%s': %w", parentTableName, err)
 		}
@@ -898,7 +894,7 @@ func getForeignKeysForTable(queryist cli.Queryist, sqlCtx *sql.Context, fkTableN
 	return fkList, nil
 }
 
-func getTableSchemaAtRef(queryist cli.Queryist, sqlCtx *sql.Context, tableName string, ref string, fks []diff.ForeignKeyInfo) (sch schema.Schema, createStmt string, err error) {
+func getTableSchemaAtRef(queryist cli.Queryist, sqlCtx *sql.Context, tableName string, ref string) (sch schema.Schema, createStmt string, err error) {
 	var rows []sql.Row
 	q := fmt.Sprintf("show create table %s as of '%s'", tableName, ref)
 	rows, err = getRowsForSql(queryist, sqlCtx, q)
@@ -914,30 +910,6 @@ func getTableSchemaAtRef(queryist cli.Queryist, sqlCtx *sql.Context, tableName s
 	// append ; at the end, if one isn't there yet
 	if createStmt[len(createStmt)-1] != ';' {
 		createStmt += ";"
-	}
-
-	// TODO: remove once https://github.com/dolthub/dolt/issues/6178 is fixed
-	constraintIndex := 0
-	lines := strings.Split(createStmt, "\n")
-	for i, line := range lines {
-		isConstraint := strings.Contains(line, "  CONSTRAINT")
-		if isConstraint && constraintIndex < len(fks) {
-			fk := fks[constraintIndex]
-			correctConstraint := fmt.Sprintf("  CONSTRAINT `%s` FOREIGN KEY (`%s`) REFERENCES `%s` (`%s`)",
-				fk.Name, strings.Join(fk.TableColumns, "`,`"), fk.ReferencedTableName, strings.Join(fk.ReferencedTableColumns, "`,`"))
-			if fk.OnUpdate != "NONE SPECIFIED" {
-				correctConstraint += fmt.Sprintf(" ON UPDATE %s", fk.OnUpdate)
-			}
-			if fk.OnDelete != "NONE SPECIFIED" {
-				correctConstraint += fmt.Sprintf(" ON DELETE %s", fk.OnDelete)
-			}
-			lines[i] = correctConstraint
-			constraintIndex++
-		}
-	}
-
-	if constraintIndex > 0 {
-		createStmt = strings.Join(lines, "\n")
 	}
 
 	sch, err = schemaFromCreateTableStmt(sqlCtx, createStmt)
@@ -1089,12 +1061,6 @@ func diffUserTable(
 	}
 
 	if dArgs.diffParts&SchemaOnlyDiff != 0 {
-		//schemaDiffSummary, err := getSchemaDiffSummaryBetweenRefs(queryist, sqlCtx, dArgs.fromRef, dArgs.toRef, tableName)
-		//if err != nil {
-		//	return errhand.BuildDError("cannot retrieve schema diff between '%s' and '%s'", dArgs.fromRef, dArgs.toRef).AddCause(err).Build()
-		//}
-		//if schemaDiffSummary != nil {
-		//}
 		err = dw.WriteTableSchemaDiff(fromTableInfo, toTableInfo, tableSummary)
 		if err != nil {
 			return errhand.VerboseErrorFromError(err)
@@ -1103,8 +1069,6 @@ func diffUserTable(
 
 	if tableSummary.IsDrop() && dArgs.diffOutput == SQLDiffOutput {
 		return nil // don't output DELETE FROM statements after DROP TABLE
-	} else if tableSummary.IsAdd() {
-		//fromSch = toSch
 	}
 
 	verr := diffRows(queryist, sqlCtx, tableSummary, fromTableInfo, toTableInfo, dArgs, dw)
