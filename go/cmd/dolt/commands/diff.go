@@ -200,12 +200,12 @@ func (cmd DiffCmd) Exec(ctx context.Context, commandStr string, args []string, d
 		defer closeFunc()
 	}
 
-	dArgs, err := parseDiffArgs(queryist, sqlCtx, ctx, apr)
+	dArgs, err := parseDiffArgs(queryist, sqlCtx, apr)
 	if err != nil {
 		return HandleVErrAndExitCode(errhand.VerboseErrorFromError(err), usage)
 	}
 
-	verr = diffUserTables(queryist, sqlCtx, ctx, dArgs)
+	verr = diffUserTables(queryist, sqlCtx, dArgs)
 	return HandleVErrAndExitCode(verr, usage)
 }
 
@@ -268,12 +268,12 @@ func parseDiffDisplaySettings(apr *argparser.ArgParseResults) *diffDisplaySettin
 	return displaySettings
 }
 
-func parseDiffArgs(queryist cli.Queryist, sqlCtx *sql.Context, ctx context.Context, apr *argparser.ArgParseResults) (*diffArgs, error) {
+func parseDiffArgs(queryist cli.Queryist, sqlCtx *sql.Context, apr *argparser.ArgParseResults) (*diffArgs, error) {
 	dArgs := &diffArgs{
 		diffDisplaySettings: parseDiffDisplaySettings(apr),
 	}
 
-	tableNames, err := dArgs.applyDiffRoots(queryist, sqlCtx, ctx, apr.Args, apr.Contains(cli.CachedFlag), apr.Contains(MergeBase))
+	tableNames, err := dArgs.applyDiffRoots(queryist, sqlCtx, apr.Args, apr.Contains(cli.CachedFlag), apr.Contains(MergeBase))
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +285,7 @@ func parseDiffArgs(queryist cli.Queryist, sqlCtx *sql.Context, ctx context.Conte
 		}
 	}
 
-	tableSet, err := parseDiffTableSetSql(queryist, sqlCtx, ctx, dArgs.diffDatasets, tableNames)
+	tableSet, err := parseDiffTableSetSql(queryist, sqlCtx, dArgs.diffDatasets, tableNames)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +295,7 @@ func parseDiffArgs(queryist cli.Queryist, sqlCtx *sql.Context, ctx context.Conte
 	return dArgs, nil
 }
 
-func parseDiffTableSetSql(queryist cli.Queryist, sqlCtx *sql.Context, ctx context.Context, datasets *diffDatasets, tableNames []string) (*set.StrSet, error) {
+func parseDiffTableSetSql(queryist cli.Queryist, sqlCtx *sql.Context, datasets *diffDatasets, tableNames []string) (*set.StrSet, error) {
 
 	tablesAtFromRef, err := getTableNamesAtRef(queryist, sqlCtx, datasets.fromRef)
 	if err != nil {
@@ -377,7 +377,7 @@ func getTableNamesAtRef(queryist cli.Queryist, sqlCtx *sql.Context, ref string) 
 
 // applyDiffRoots applies the appropriate |from| and |to| root values to the receiver and returns the table names
 // (if any) given to the command.
-func (dArgs *diffArgs) applyDiffRoots(queryist cli.Queryist, sqlCtx *sql.Context, ctx context.Context, args []string, isCached, useMergeBase bool) ([]string, error) {
+func (dArgs *diffArgs) applyDiffRoots(queryist cli.Queryist, sqlCtx *sql.Context, args []string, isCached, useMergeBase bool) ([]string, error) {
 	dArgs.diffDatasets = &diffDatasets{
 		fromRef: doltdb.Staged,
 		toRef:   doltdb.Working,
@@ -400,7 +400,7 @@ func (dArgs *diffArgs) applyDiffRoots(queryist cli.Queryist, sqlCtx *sql.Context
 		if useMergeBase {
 			return nil, fmt.Errorf("Cannot use `..` or `...` with --merge-base flag")
 		}
-		err := dArgs.applyDotRevisions(queryist, sqlCtx, ctx, args)
+		err := dArgs.applyDotRevisions(queryist, sqlCtx, args)
 		if err != nil {
 			return nil, err
 		}
@@ -487,7 +487,7 @@ func getCommonAncestor(queryist cli.Queryist, sqlCtx *sql.Context, c1, c2 string
 
 // applyDotRevisions applies the appropriate |from| and |to| root values to the
 // receiver for arguments containing `..` or `...`
-func (dArgs *diffArgs) applyDotRevisions(queryist cli.Queryist, sqlCtx *sql.Context, ctx context.Context, args []string) error {
+func (dArgs *diffArgs) applyDotRevisions(queryist cli.Queryist, sqlCtx *sql.Context, args []string) error {
 	// `dolt diff from_commit...to_commit [...tables]`
 	if strings.Contains(args[0], "...") {
 		refs := strings.Split(args[0], "...")
@@ -706,7 +706,7 @@ func getDiffSummariesBetweenRefs(queryist cli.Queryist, sqlCtx *sql.Context, fro
 	return summaries, nil
 }
 
-func diffUserTables(queryist cli.Queryist, sqlCtx *sql.Context, ctx context.Context, dArgs *diffArgs) errhand.VerboseError {
+func diffUserTables(queryist cli.Queryist, sqlCtx *sql.Context, dArgs *diffArgs) errhand.VerboseError {
 	var err error
 
 	//diffSummaries, err := getDiffSummariesBetweenRefs(queryist, sqlCtx, dArgs.fromRef, dArgs.toRef)
@@ -716,7 +716,7 @@ func diffUserTables(queryist cli.Queryist, sqlCtx *sql.Context, ctx context.Cont
 	}
 
 	if dArgs.diffParts&Summary != 0 {
-		return printDiffSummary(ctx, deltas, dArgs)
+		return printDiffSummary(sqlCtx, deltas, dArgs)
 	}
 
 	dw, err := newDiffWriter(dArgs.diffOutput)
@@ -775,7 +775,7 @@ func diffUserTables(queryist cli.Queryist, sqlCtx *sql.Context, ctx context.Cont
 		}
 	}
 
-	err = dw.Close(ctx)
+	err = dw.Close(sqlCtx)
 	if err != nil {
 		return errhand.VerboseErrorFromError(err)
 	}
