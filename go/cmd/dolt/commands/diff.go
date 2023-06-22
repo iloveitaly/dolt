@@ -793,27 +793,15 @@ func isDoltSchemasTable(toTableName, fromTableName string) bool {
 }
 
 func getTableInfoAtRef(queryist cli.Queryist, sqlCtx *sql.Context, tableName string, ref string) (diff.TableInfo, error) {
-	fks, err := getForeignKeysForTable(queryist, sqlCtx, tableName, ref)
-	if err != nil {
-		return diff.TableInfo{}, fmt.Errorf("error: unable to get foreign keys for table '%s': %w", tableName, err)
-	}
-
 	sch, createStmt, err := getTableSchemaAtRef(queryist, sqlCtx, tableName, ref)
 	if err != nil {
 		return diff.TableInfo{}, fmt.Errorf("error: unable to get schema for table '%s': %w", tableName, err)
 	}
 
-	fksParentSch, err := getFkParentSchemas(queryist, sqlCtx, fks, ref)
-	if err != nil {
-		return diff.TableInfo{}, fmt.Errorf("error: unable to get parent schemas for foreign keys for table '%s': %w", tableName, err)
-	}
-
 	tableInfo := diff.TableInfo{
-		Name:         tableName,
-		Sch:          sch,
-		CreateStmt:   createStmt,
-		Fks:          fks,
-		FksParentSch: fksParentSch,
+		Name:       tableName,
+		Sch:        sch,
+		CreateStmt: createStmt,
 	}
 	return tableInfo, nil
 }
@@ -829,69 +817,6 @@ func getFkParentSchemas(queryist cli.Queryist, sqlCtx *sql.Context, fks []diff.F
 		parentSchs[parentTableName] = sch
 	}
 	return parentSchs, nil
-}
-
-func getForeignKeysForTable(queryist cli.Queryist, sqlCtx *sql.Context, fkTableName, ref string) ([]diff.ForeignKeyInfo, error) {
-	q := fmt.Sprintf("select * from dolt_foreign_key_status('%s')", ref)
-	fkRows, err := getRowsForSql(queryist, sqlCtx, q)
-	if err != nil {
-		return nil, err
-	}
-
-	foreignKeys := map[string]diff.ForeignKeyInfo{}
-	for _, row := range fkRows {
-		tableName := row[2].(string)
-		if tableName != fkTableName {
-			continue
-		}
-
-		fkName := row[0].(string)
-		isResolved, err := getTinyIntColAsBool(row[1])
-		if err != nil {
-			return nil, fmt.Errorf("error parsing is_resolved column: %w", err)
-		}
-		tableIndex := row[3].(string)
-		tableColumnValue := row[4].(string)
-		referencedTableName := row[5].(string)
-		referencedTableIndex := row[6].(string)
-		referencedTableColumnValue := row[7].(string)
-		onUpdate := row[8].(string)
-		onDelete := row[9].(string)
-		unresolvedTableColumn := row[10].(string)
-		unresolvedReferenceTableColumn := row[11].(string)
-
-		fk, ok := foreignKeys[fkName]
-		if !ok {
-			fk = diff.ForeignKeyInfo{
-				Name:                            fkName,
-				TableName:                       tableName,
-				TableIndex:                      tableIndex,
-				TableColumns:                    []string{},
-				ReferencedTableName:             referencedTableName,
-				ReferencedTableIndex:            referencedTableIndex,
-				ReferencedTableColumns:          []string{},
-				OnUpdate:                        onUpdate,
-				OnDelete:                        onDelete,
-				UnresolvedTableColumns:          []string{},
-				UnresolvedReferenceTableColumns: []string{},
-			}
-		}
-
-		if isResolved {
-			fk.TableColumns = append(fk.TableColumns, tableColumnValue)
-			fk.ReferencedTableColumns = append(fk.ReferencedTableColumns, referencedTableColumnValue)
-		} else {
-			fk.UnresolvedTableColumns = append(fk.UnresolvedTableColumns, unresolvedTableColumn)
-			fk.UnresolvedReferenceTableColumns = append(fk.UnresolvedReferenceTableColumns, unresolvedReferenceTableColumn)
-		}
-		foreignKeys[fkName] = fk
-	}
-
-	fkList := []diff.ForeignKeyInfo{}
-	for _, fk := range foreignKeys {
-		fkList = append(fkList, fk)
-	}
-	return fkList, nil
 }
 
 func getTableSchemaAtRef(queryist cli.Queryist, sqlCtx *sql.Context, tableName string, ref string) (sch schema.Schema, createStmt string, err error) {
