@@ -21,6 +21,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/fatih/color"
+
 	"github.com/dolthub/dolt/go/cmd/dolt/cli"
 	"github.com/dolthub/dolt/go/cmd/dolt/errhand"
 	eventsapi "github.com/dolthub/dolt/go/gen/proto/dolt/services/eventsapi/v1alpha1"
@@ -32,8 +35,6 @@ import (
 	"github.com/dolthub/dolt/go/store/datas"
 	"github.com/dolthub/dolt/go/store/hash"
 	"github.com/dolthub/dolt/go/store/util/outputpager"
-	"github.com/dolthub/go-mysql-server/sql"
-	"github.com/fatih/color"
 )
 
 type logOpts struct {
