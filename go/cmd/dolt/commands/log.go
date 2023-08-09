@@ -425,6 +425,10 @@ func logCommits(opts *logOpts, sqlResult []sql.Row, queryist cli.Queryist, sqlCt
 			cli.PrintErrln("error: failed to get parent hashes")
 			handleErrAndExit(err)
 		}
+		cli.Println(opts.minParents)
+		if opts.minParents > 0 && len(parents) < opts.minParents {
+			continue
+		}
 		var pHashes []hash.Hash
 		for _, p := range parents {
 			if p[0] != nil {
