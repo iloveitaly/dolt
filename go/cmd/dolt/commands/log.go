@@ -127,15 +127,17 @@ func (cmd LogCmd) logWithLoggerFunc(ctx context.Context, commandStr string, args
 		defer closeFunc()
 	}
 
-	logRows, err := GetRowsForSql(queryist, sqlCtx, "select * from dolt_log")
-	if err != nil {
-		handleErrAndExit(err)
-	}
-
 	opts, err := parseLogArgs(ctx, dEnv, apr)
 	if err != nil {
 		return HandleVErrAndExitCode(errhand.VerboseErrorFromError(err), usage)
 	}
+
+	query := constructDoltLogQuery(opts)
+	logRows, err := GetRowsForSql(queryist, sqlCtx, query)
+	if err != nil {
+		handleErrAndExit(err)
+	}
+
 	/*if len(opts.commitSpecs) == 0 {
 		headRef, err := dEnv.RepoStateReader().CWBHeadSpec()
 		if err != nil {
@@ -147,6 +149,17 @@ func (cmd LogCmd) logWithLoggerFunc(ctx context.Context, commandStr string, args
 		return handleErrAndExit(logTableCommits(ctx, dEnv, opts))
 	}*/
 	return logCommits(opts, logRows, queryist, sqlCtx)
+}
+
+// constructDoltLogQuery constructs a query to get the commit logs from the dolt_log table with the given options
+func constructDoltLogQuery(opts *logOpts) string {
+	var query strings.Builder
+	query.WriteString("select * from dolt_log")
+	if opts.numLines >= 0 {
+		query.WriteString(fmt.Sprintf(" limit %d", opts.numLines))
+	}
+
+	return query.String()
 }
 
 func parseLogArgs(ctx context.Context, dEnv *env.DoltEnv, apr *argparser.ArgParseResults) (*logOpts, error) {
